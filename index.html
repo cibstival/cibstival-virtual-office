@@ -76,6 +76,20 @@ const ROSTER = {
 const ORDER = ["whip","mac","pc","oke","api","scrooge"];
 let DATA = null;
 const STAT = {working:["일하는 중","#6ee39a"],waiting:["대기","#ffd25e"],idle:["쉼","#b7b2cf"],stopped:["중지","#ff7a70"]};
+// 실제 깨는 간격(분) — 세션은 깨서 한 단위 일하고 보고한 뒤 잔다
+const EVERY = {oke:60, mac:30, api:30, pc:60, whip:60, scrooge:120};
+function kstMin(){ const d=new Date(); const k=new Date(d.getTime()+(d.getTimezoneOffset()+540)*60000); return k.getHours()*60+k.getMinutes()+k.getSeconds()/60; }
+function hmOf(str){ const m=/(\d{1,2}):(\d{2})/.exec(String(str||"")); return m? (+m[1])*60+(+m[2]) : null; }
+function agoOf(str){ const v=hmOf(str); if(v==null) return null; let a=kstMin()-v; if(a<-5) a+=1440; return Math.max(0,a); }
+function agoTxt(a, short){ if(a==null) return "-"; if(a<1) return "방금"; if(a<60) return Math.floor(a)+"분"+(short?"":" 전"); const h=Math.floor(a/60), m=Math.floor(a%60); return short? h+"시간" : h+"시간 "+m+"분 전"; }
+function everyOf(id, s){ return (s&&s.every)||EVERY[id]||60; }
+function phaseOf(id, s){ // rest = 다음 깸 전(쉬는 중) · awake = 깰 시각 지남(일하는 중으로 추정) · silent = 오래 소식 없음
+  if(!s) return "rest"; const a=agoOf(s.last), ev=everyOf(id,s);
+  if(a==null) return "awake"; if(a>Math.max(180, ev*3)) return "silent"; return a<ev ? "rest" : "awake"; }
+function nextWakeOf(id, s){ const v=hmOf(s&&s.last); if(v==null) return null; const n=(v+everyOf(id,s))%1440; return String(Math.floor(n/60)).padStart(2,"0")+":"+String(Math.floor(n%60)).padStart(2,"0"); }
+const PH = {rest:["쉬는 중","#8fb8ff"], awake:["깨어 있음(추정)","#6ee39a"], silent:["소식 없음","#9a96ad"]};
+function dotColor(c){ if(c.status==="stopped"||c.status==="idle") return (STAT[c.status]||["","#b7b2cf"])[1]; if(c.status==="waiting" && c.ph!=="silent") return c.ph==="awake"?"#ffd25e":"#8fb8ff"; return (PH[c.ph]||PH.rest)[1]; }
+function tagText(c){ const a=c.sess? agoOf(c.sess.last):null; return ROSTER[c.id].name+(a!=null?" · "+agoTxt(a,true):""); }
 
 /* ---------- 캔버스 ---------- */
 const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
@@ -95,7 +109,7 @@ function drawChar(c, t){
   const ox = Math.round(c.x - 6*P), oy = Math.round(c.y - 20*P);
   const px=(x,y,w,h,col)=>r(ox+x*P, oy+y*P, w*P, h*P, col);
   const OUT="#1a1622", SKIN="#ffd9b8", EYE="#2a2236";
-  const grey = c.status==="stopped";
+  const grey = c.status==="stopped" || c.ph==="silent";
   if(grey) ctx.filter="grayscale(1) brightness(.85)";
   // 그림자
   if(c.pose!=="sit"){ ctx.fillStyle="rgba(0,0,0,.18)"; ctx.beginPath(); ctx.ellipse(c.x, c.y+1, 20, 5, 0, 0, 7); ctx.fill(); }
@@ -138,11 +152,11 @@ function drawChar(c, t){
   if(c.pose==="sleep"){ ctx.fillStyle="#ffffffcc"; ctx.font="900 12px 'Noto Sans KR'"; const zz=(t*0.8+c.seed)%1; ctx.fillText("z", c.x+14, oy-2-zz*10); ctx.fillText("Z", c.x+22, oy-10-zz*12); }
   if(c.pose==="sit"||c.pose==="sleep"){ c.hit = {x:ox-4, y:oy-4, w:12*P+8, h:20*P+8}; return; }
   // 이름표 (발 아래)
-  const nm = look.name; ctx.font="700 11px 'Noto Sans KR'";
+  const nm = tagText(c); ctx.font="700 11px 'Noto Sans KR'";
   const tw = ctx.measureText(nm).width + 18;
   const ny = c.pose==="sit"||c.pose==="sleep" ? DESKTOP+40 : c.y+6;
   rr(c.x - tw/2, ny, tw, 16, 4, "rgba(20,18,32,.85)");
-  const sc = (STAT[c.status]||["","#b7b2cf"])[1];
+  const sc = dotColor(c);
   ctx.fillStyle=sc; ctx.beginPath(); ctx.arc(c.x - tw/2 + 8, ny+8, 3, 0, 7); ctx.fill();
   ctx.fillStyle="#fff"; ctx.fillText(nm, c.x - tw/2 + 14, ny+12);
   // 말풍선
@@ -242,7 +256,7 @@ function drawDesk(id, owner, t){
   // 모니터
   const mx = x + (big?34:26), my = DESKTOP-34;
   r(mx-20,my,40,30,"#2a2733"); r(mx-17,my+3,34,22,"#13202a"); r(mx-3,my+30,6,4,"#2a2733");
-  if(owner && owner.status==="working"){
+  if(owner && owner.status==="working" && owner.ph==="awake"){
     for(let i=0;i<4;i++){ const len = ((t*30 + i*13 + owner.seed*40) % 30); r(mx-14, my+6+i*5, Math.min(28,len), 2, ["#6ee39a","#7fb4ff","#ffd25e","#6ee39a"][i]); }
   } else if(owner && owner.status==="stopped"){ r(mx-17,my+3,34,22,"#000"); }
   else { r(mx-6,my+12,12,2,"#2c4a5a"); }
@@ -250,7 +264,7 @@ function drawDesk(id, owner, t){
 }
 
 /* ---------- 캐릭터 상태 ---------- */
-const chars = ORDER.map((id,i)=>({id, x:DESK[id]-20, y:FLOOR-12, home:DESK[id]-20, pose:"sit", walking:false, target:null, plan:[], wait:0, bubble:"", bubbleT:0, nextTalk:2+i*2, nextTrip:4+i*4, status:"idle", seed:Math.random(), sess:null}));
+const chars = ORDER.map((id,i)=>({id, x:DESK[id]-20, y:FLOOR-12, home:DESK[id]-20, pose:"sit", walking:false, target:null, plan:[], wait:0, bubble:"", bubbleT:0, nextTalk:3+i*3, status:"idle", ph:"rest", pending:null, seed:Math.random(), sess:null}));
 function sess(id){ return DATA && DATA.sessions ? DATA.sessions.find(s=>s.id===id) : null; }
 function say(c, txt, dur){ c.bubble=txt; c.bubbleT=dur||4; }
 function go(c, x, then){ c.plan.push({x, then}); }
@@ -271,28 +285,30 @@ function update(c, dt, t){
   if(c.plan.length){ c.target = c.plan[0].x; return; }
 
   const atHome = Math.abs(c.x-c.home)<2;
-  if(st==="stopped"){ if(!atHome){ c.target=c.home; c.plan=[{x:c.home}]; return; } c.pose="sit"; c.y=FLOOR-12; return; }
-  if(st==="idle"){ if(!atHome){ c.target=c.home; c.plan=[{x:c.home}]; return; } c.pose="sleep"; c.y=FLOOR-12; return; }
+  c.ph = phaseOf(c.id, s);
+  // ③ 진짜 새 보고가 들어왔을 때만 오케에게 걸어감
+  if(c.pending){ const pd=c.pending; c.pending=null;
+    if(c.id==="oke"){ c.plan=[{x:BOARD, then:()=>{ c.wait=3; say(c,"판 갱신 "+(pd||""),3.5);} },{x:c.home}]; c.target=c.plan[0].x; return; }
+    const ox = DESK.oke + (c.x<DESK.oke? -70: 70);
+    const msg = c.id==="whip" ? (()=>{ const u=(DATA&&DATA.usage)||{}; return `사용량 ${u.pct??"-"}% · ${u.state??""} ⏱`; })() : "보고드립니다! 📄 "+(pd||"");
+    c.plan=[{x:ox, then:()=>{ c.wait=3; say(c,msg,3.5); const o=chars.find(q=>q.id==="oke"); if(o) say(o,"확인했어요 👍",2.5);} },{x:c.home}]; c.target=c.plan[0].x; return; }
+  const sitHome = pose => { if(!atHome){ c.target=c.home; c.plan=[{x:c.home}]; return true; } c.pose=pose; c.y=FLOOR-12; return false; };
+  if(st==="stopped"){ sitHome("sit"); return; }
+  if(st==="idle"){ sitHome("sleep"); return; }
+  c.nextTalk -= dt;
+  if(c.ph==="silent"){ if(sitHome("sit")) return;
+    if(c.nextTalk<=0){ c.nextTalk=25+Math.random()*15; say(c, "소식 없음 "+agoTxt(agoOf(s&&s.last)), 4); } return; }
+  if(c.ph==="rest"){ if(sitHome("sleep")) return;
+    if(c.nextTalk<=0){ c.nextTalk=25+Math.random()*15; const nw=nextWakeOf(c.id,s); say(c, (st==="waiting"?"대기 · ":"")+"다음 깸 ~"+(nw||"?"), 4); } return; }
+  // awake(추정)
   if(st==="waiting"){
-    // 라운지 배회
     c.pose="stand"; c.y=FLOOR;
     const nx = 120 + Math.random()*700;
     c.plan=[{x:nx, then:()=>{ c.wait=2+Math.random()*4; if(Math.random()<.6) say(c, "대기: "+((s&&s.task)||"…"), 4); }}];
     c.target = nx; return;
   }
-  // working
-  if(!atHome && c.plan.length===0){ c.target=c.home; c.plan=[{x:c.home}]; return; }
-  c.pose="sit"; c.y=FLOOR-12;
-  c.nextTalk -= dt; c.nextTrip -= dt;
-  if(c.nextTalk<=0){ c.nextTalk = 10+Math.random()*10; if(s && s.task) say(c, s.task, 4.5); }
-  if(c.nextTrip<=0){
-    c.nextTrip = 14+Math.random()*16;
-    if(c.id==="whip"){ c.plan=[{x:DESK.oke-70, then:()=>{ c.wait=3; const u=(DATA&&DATA.usage)||{}; say(c, `사용량 ${u.pct??"-"}% · ${u.state??""} ⏱`, 3);} },{x:c.home}]; c.target=c.plan[0].x; return; }
-    if(c.id==="oke"){ c.plan=[{x:BOARD, then:()=>{ c.wait=3; say(c,"계획 갱신 중…",3);} },{x:c.home}]; c.target=c.plan[0].x; return; }
-    if(c.id==="scrooge"){ c.plan=[{x:COFFEE+30, then:()=>{ c.wait=3; say(c,"토큰 아끼자!",3);} },{x:c.home}]; c.target=c.plan[0].x; return; }
-    if(s && (s.reported || Math.random()<.5)){ const ox = DESK.oke + (c.x<DESK.oke? -70: 70);
-      c.plan=[{x:ox, then:()=>{ c.wait=3; say(c,"보고드립니다! 📄",3); const o=chars.find(q=>q.id==="oke"); if(o) say(o,"확인했어요 👍",2.5);} },{x:c.home}]; c.target=c.plan[0].x; return; }
-  }
+  if(sitHome("sit")) return;
+  if(c.nextTalk<=0){ c.nextTalk = 20+Math.random()*15; if(s && s.task) say(c, s.task, 4.5); }
 }
 
 /* ---------- 루프 ---------- */
@@ -311,11 +327,11 @@ function frame(now){
   requestAnimationFrame(frame);
 }
 function drawNameOnly(c){
-  const look=ROSTER[c.id]; ctx.font="700 11px 'Noto Sans KR'";
-  const tw=ctx.measureText(look.name).width+18, ny=DESKTOP+48;
+  const look=ROSTER[c.id], nm=tagText(c); ctx.font="700 11px 'Noto Sans KR'";
+  const tw=ctx.measureText(nm).width+18, ny=DESKTOP+48;
   rr(c.x-tw/2+18, ny, tw, 16, 4, "rgba(20,18,32,.85)");
-  ctx.fillStyle=(STAT[c.status]||["","#b7b2cf"])[1]; ctx.beginPath(); ctx.arc(c.x-tw/2+26, ny+8, 3,0,7); ctx.fill();
-  ctx.fillStyle="#fff"; ctx.fillText(look.name, c.x-tw/2+32, ny+12);
+  ctx.fillStyle=dotColor(c); ctx.beginPath(); ctx.arc(c.x-tw/2+26, ny+8, 3,0,7); ctx.fill();
+  ctx.fillStyle=c.ph==="silent"?"#b9b6c8":"#fff"; ctx.fillText(nm, c.x-tw/2+32, ny+12);
   if(c.bubble && c.bubbleT>0){
     const txt=c.bubble.length>24?c.bubble.slice(0,23)+"…":c.bubble;
     const bw=ctx.measureText(txt).width+14, bx=Math.max(4,Math.min(W-bw-4,c.x-bw/2)), by=c.y-20*P-30;
@@ -335,7 +351,8 @@ cv.addEventListener("click", e=>{
   document.getElementById("info").innerHTML = `<b>${esc(look.name)}</b><span class="pill" style="background:${st[1]}">${st[0]}</span>
     <div class="row"><span class="lbl">역할</span>${esc(look.role)}</div>
     <div class="row"><span class="lbl">지금 할 일</span>${esc(s.task||"-")}</div>
-    <div class="row"><span class="lbl">마지막 보고 ${esc(s.last||"-")}</span>${esc(s.note||"")}</div>`;
+    <div class="row"><span class="lbl">마지막 보고 ${esc(s.last||"-")} (${esc(agoTxt(agoOf(s.last)))}) · 지금: ${esc((PH[c.ph]||PH.rest)[0])}${c.ph==="rest"?" · 다음 깸 ~"+esc(nextWakeOf(c.id,s)||"?"):""}</span>${esc(s.note||"")}</div>
+    <div class="row" style="font-size:11px;color:#9f98d6">'깨어 있음/쉬는 중'은 마지막 보고 시각과 깨는 간격(${everyOf(c.id,s)}분)으로 추정한 것입니다.</div>`;
   say(c, "저요?", 1.5);
 });
 
@@ -354,7 +371,22 @@ function renderHUD(d){
   document.getElementById("expL").textContent = eng? eng.l : "";
   document.getElementById("kpi").innerHTML = items.slice(1).map(k=>`<div><b style="color:var(--gold)">${esc(k.v)}</b> <span style="color:#b9b3e0">${esc(k.l)}</span></div>`).join("");
   document.getElementById("feed").innerHTML = (d.feed||[]).map(f=>`<li><span class="t">${esc(f.t)}</span><b>${esc(f.who)}</b><span>${esc(f.text)}</span></li>`).join("");
-  document.getElementById("upd").textContent = "판 갱신: "+(d.updated||"-")+" · 오케가 정기 점검 때마다 갱신 · 캐릭터는 이 사무실을 위해 새로 그린 도트 캐릭터";
+  footer();
+}
+function footer(){ const d=DATA; if(!d) return; const a=agoOf(d.updated);
+  document.getElementById("upd").textContent = "판 갱신 "+(d.updated||"-")+(a!=null?" ("+agoTxt(a)+")":"")+" · 세션은 30~60분마다 깨서 한 단위 일하고 보고 · 판은 오케 점검(약 60분) 때 갱신 · 이름표 시간 = 마지막 보고 뒤 지난 시간 · 걸어가는 보고 = 실제 새 보고";
+}
+setInterval(footer, 30000);
+let PREV=null;
+function onData(d){
+  const first = PREV==null;
+  (d.sessions||[]).forEach(ns=>{ const c=chars.find(q=>q.id===ns.id); if(!c) return;
+    const old = first? null : (PREV.sessions||[]).find(o=>o.id===ns.id);
+    const fresh = first ? (agoOf(ns.last)!=null && agoOf(ns.last)<=10) : (!old || old.last!==ns.last);
+    if(fresh && ns.id!=="oke") c.pending = ns.last||"";
+  });
+  if(!first && PREV.updated!==d.updated){ const o=chars.find(q=>q.id==="oke"); if(o) o.pending=(hmOf(d.updated)!=null? String(d.updated).match(/\d{1,2}:\d{2}/)[0]:""); }
+  PREV = JSON.parse(JSON.stringify(d));
 }
 
 const DEMO = {
@@ -377,9 +409,20 @@ const DEMO = {
     {t:"14:00", who:"scrooge", text:"낭비 7가지 제안"}
   ]
 };
-function useDemo(msg){ DATA=DEMO; renderHUD(DEMO); document.getElementById("upd").textContent = msg; }
+function hhmmAgo(min){ const v=((kstMin()-min)%1440+1440)%1440; return String(Math.floor(v/60)).padStart(2,"0")+":"+String(Math.floor(v%60)).padStart(2,"0"); }
+function useDemo(msg){
+  // 데모: 마지막 보고 시각을 지금 기준으로 맞춤(맥북은 방금 보고, 나머지는 쉬는 중·깨어 있음 섞임)
+  const off={oke:5, mac:0.5, pc:40, api:35, whip:20, scrooge:70};
+  DEMO.sessions.forEach(x=>{ x.last=hhmmAgo(off[x.id]||10); });
+  DEMO.updated="데모 "+hhmmAgo(5); DEMO.usage.at=hhmmAgo(20);
+  DATA=DEMO; onData(DEMO); renderHUD(DEMO); document.getElementById("upd").textContent = msg;
+  setInterval(()=>{ // 데모용: 2~3분마다 누군가 새 보고
+    const ids=["mac","api","pc","whip","scrooge"], id=ids[Math.floor(Math.random()*ids.length)];
+    const d2=JSON.parse(JSON.stringify(DATA)); d2.sessions.find(x=>x.id===id).last=hhmmAgo(0); DATA=d2; onData(d2); renderHUD(d2);
+    document.getElementById("upd").textContent = msg; }, 150000);
+}
 (async ()=>{
-  if(typeof window.claude==="undefined" || !window.claude || !window.claude.use){ useDemo("데모 모드 — claude.ai 아티팩트 밖에서는 예시 데이터로 움직입니다"); return; }
+  if(typeof window.claude==="undefined" || !window.claude || !window.claude.use){ useDemo("데모 모드 — 예시 데이터. 이름표 시간 = 마지막 보고 뒤 지난 시간, 걸어가는 보고 = 새 보고가 들어왔을 때만"); return; }
   const timer=setTimeout(()=>{document.getElementById("upd").textContent="판 데이터를 아직 불러오지 못했습니다(로그인 필요).";},10000);
   try{
     const db = await claude.use("db");
@@ -387,7 +430,7 @@ function useDemo(msg){ DATA=DEMO; renderHUD(DEMO); document.getElementById("upd"
     db.doc("office/state").onSnapshot(snap=>{
       if(!snap.metadata.fromCache) clearTimeout(timer);
       const d = snap.exists ? snap.data() : null;
-      if(d && d.sessions){ DATA=d; renderHUD(d); } else document.getElementById("upd").textContent="아직 판 데이터 없음 — 오케가 다음 점검 때 채웁니다";
+      if(d && d.sessions){ DATA=d; onData(d); renderHUD(d); } else document.getElementById("upd").textContent="아직 판 데이터 없음 — 오케가 다음 점검 때 채웁니다";
     }, ()=>{ clearTimeout(timer); document.getElementById("upd").textContent="판 데이터를 불러오지 못했습니다."; });
   }catch(e){ clearTimeout(timer); document.getElementById("upd").textContent="판 데이터를 불러오지 못했습니다."; }
 })();
